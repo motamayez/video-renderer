@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Mihnah Video Renderer</title>
+    <!-- تحميل FFmpeg.wasm -->
+    <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js"></script>
+</head>
+<body style="background:#0a0a0f; color:white; font-family:monospace; padding:20px;">
+    <h2>🎬 محرك الرندرة جاهز</h2>
+    <p id="status">في انتظار بيانات الفيديو من Blogger...</p>
+    <div id="progress" style="width:100%; height:10px; background:#333; margin:20px 0;">
+        <div id="bar" style="width:0%; height:100%; background:#6c7fff;"></div>
+    </div>
+    <pre id="log" style="color:#a6e3a1;"></pre>
+
+    <script>
+        const { createFFmpeg, fetchFile } = FFmpeg;
+        const ffmpeg = createFFmpeg({ log: true });
+        
+        const statusEl = document.getElementById('status');
+        const barEl = document.getElementById('bar');
+        const logEl = document.getElementById('log');
+
+        function log(msg) {
+            logEl.textContent += msg + '\n';
+            console.log(msg);
+        }
+
+        // استقبال البيانات من Blogger عبر postMessage
+        window.addEventListener('message', async (event) => {
+            // تأكد من أن الرسالة من مصدر موثوق (سنضبطه لاحقاً)
+            if (event.data.type !== 'RENDER_VIDEO') return;
+            
+            const { scenes, settings } = event.data.payload;
+            log('📦 تم استقبال ' + scenes.length + ' مشاهد');
+            
+            await renderVideo(scenes, settings);
+        });
+
+        async function renderVideo(scenes, settings) {
+            try {
+                statusEl.textContent = '⏳ جاري تحميل FFmpeg...';
+                await ffmpeg.load();
+                log('✅ FFmpeg جاهز');
+                
+                // 1. تحميل الوسائط لكل مشهد
+                for (let i = 0; i < scenes.length; i++) {
+                    const scene = scenes[i];
+                    statusEl.textContent = `⏳ تحميل المشهد ${i+1}/${scenes.length}...`;
+                    barEl.style.width = ((i / scenes.length) * 50) + '%';
+                    
+                    // تحميل الفيديو/الصورة
+                    if (scene.mediaUrl) {
+                        log(`📥 تحميل وسيط المشهد ${i+1}: ${scene.mediaUrl}`);
+                        ffmpeg.FS('writeFile', `media${i}.mp4`, await fetchFile(scene.mediaUrl));
+                    }
+                    
+                    // تحميل الصوت (إذا كان متوفراً كـ URL)
+                    if (scene.audioUrl) {
+                        log(`🔊 تحميل صوت المشهد ${i+1}`);
+                        ffmpeg.FS('writeFile', `audio${i}.mp3`, await fetchFile(scene.audioUrl));
+                    }
+                }
+                
+                // 2. معالجة كل مشهد
+                let concatList = '';
+                for (let i = 0; i < scenes.length; i++) {
+                    statusEl.textContent = `⚙️ معالجة المشهد ${i+1}/${scenes.length}...`;
+                    barEl.style.width = (50 + (i / scenes.length) * 40) + '%';
+                    
+                    const duration = scenes[i].duration || 5;
+                    
+                    // أمر FFmpeg لدمج الوسيط مع الصوت
+                    await ffmpeg.run(
+                        '-i', `media${i}.mp4`,
+                        '-i', `audio${i}.mp3`,
+                        '-c:v', 'libx264',
+                        '-c:a', 'aac',
+                        '-t', duration.toString(),
+                        '-pix_fmt', 'yuv420p',
+                        '-shortest',
+                        `scene${i}.mp4`
+                    );
+                    concatList += `file 'scene${i}.mp4'\n`;
+                }
+                
+                // 3. دمج جميع المشاهد
+                statusEl.textContent = '🔗 دمج المشاهد النهائية...';
+                barEl.style.width = '90%';
+                ffmpeg.FS('writeFile', 'list.txt', concatList);
+                await ffmpeg.run('-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'final.mp4');
+                
+                // 4. قراءة الملف النهائي وإرساله
+                statusEl.textContent = '📤 إرسال الفيديو إلى Blogger...';
+                const data = ffmpeg.FS('readFile', 'final.mp4');
+                const blob = new Blob([data.buffer], { type: 'video/mp4' });
+                const url = URL.createObjectURL(blob);
+                
+                // إرسال الرابط إلى الصفحة الأم (Blogger)
+                window.parent.postMessage({
+                    type: 'RENDER_COMPLETE',
+                    videoUrl: url,
+                    filename: 'mihnah-video.mp4'
+                }, '*');
+                
+                statusEl.textContent = '✅ اكتمل التصدير!';
+                barEl.style.width = '100%';
+                log('🎉 الفيديو جاهز وتم إرساله إلى Blogger');
+                
+            } catch (error) {
+                statusEl.textContent = '❌ فشل الرندرة';
+                log('❌ خطأ: ' + error.message);
+                console.error(error);
+                window.parent.postMessage({
+                    type: 'RENDER_ERROR',
+                    error: error.message
+                }, '*');
+            }
+        }
+
+        // إعلام الصفحة الأم بأن المحرك جاهز
+        window.parent.postMessage({ type: 'RENDERER_READY' }, '*');
+        log('🟢 محرك الرندرة جاهز للاستقبال');
+    </script>
+</body>
+</html>
