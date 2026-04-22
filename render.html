@@ -6,43 +6,13 @@
 <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin">
 <title>Mihnah Renderer</title>
 <style>
-  body { 
-    font-family: 'Segoe UI', Tahoma, sans-serif;
-    background: #0f172a; 
-    color: #f1f5f9; 
-    display: flex; 
-    align-items: center; 
-    justify-content: center; 
-    min-height: 100vh; 
-    margin: 0; 
-    padding: 20px; 
-  }
-  .box { 
-    text-align: center; 
-    max-width: 600px; 
-    background: #1e293b; 
-    padding: 40px; 
-    border-radius: 16px; 
-    box-shadow: 0 10px 30px rgba(0,0,0,0.5); 
-  }
-  .bar { 
-    height: 12px; 
-    background: #334155; 
-    border-radius: 6px; 
-    margin: 20px 0; 
-    overflow: hidden; 
-  }
-  .fill { 
-    height: 100%; 
-    background: linear-gradient(90deg, #3fe890, #60f8b0); 
-    width: 0%; 
-    transition: width 0.4s ease; 
-  }
+  body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #0f172a; color: #f1f5f9; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
+  .box { text-align: center; max-width: 600px; background: #1e293b; padding: 40px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+  .bar { height: 12px; background: #334155; border-radius: 6px; margin: 20px 0; overflow: hidden; }
+  .fill { height: 100%; background: linear-gradient(90deg, #3fe890, #60f8b0); width: 0%; transition: width 0.4s ease; }
   h2 { margin-bottom: 10px; font-size: 1.5rem; }
   p { color: #94a3b8; font-size: 0.95rem; margin: 5px 0; }
-  .error { color: #ef4444; margin-top: 15px; padding: 15px; background: rgba(239,68,68,0.1); border-radius: 8px; }
-  .success { color: #22c55e; }
-  .info { background: rgba(124,141,255,0.1); padding: 10px; border-radius: 8px; margin: 15px 0; font-size: 0.85rem; }
+  .error { color: #ef4444; margin-top: 15px; padding: 15px; background: rgba(239,68,68,0.1); border-radius: 8px; display: none; }
 </style>
 </head>
 <body>
@@ -50,195 +20,179 @@
   <h2 id="status">🔄 جاري تحميل المحرك...</h2>
   <p id="detail">يرجى الانتظار، قد يستغرق 10-30 ثانية</p>
   <div class="bar"><div class="fill" id="fill"></div></div>
-  <div id="info" class="info"></div>
-  <div id="error" class="error" style="display:none"></div>
+  <div id="error" class="error"></div>
 </div>
 
-<!-- روابط FFmpeg الصحيحة -->
+<!-- تحميل المكتبة من CDN موثوق -->
 <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js"></script>
 
 <script>
-const { FFmpeg } = FFmpegW;
-let ffmpeg = null;
+// دالة للتحقق من نجاح تحميل المكتبة وإرسال الإشارة لبلوجر
+function checkAndSignalReady() {
+  // في النسخة 0.12، الكائن العالمي هو FFmpeg
+  if (typeof FFmpeg !== 'undefined') {
+    console.log('✅ FFmpeg library loaded successfully');
+    parent.postMessage({ action: 'iframe-active' }, '*');
+    startRender(); // بدء الاستماع للأوامر
+  } else {
+    // إذا فشلت jsdelivr، نجرب unpkg كبديل
+    console.warn('⚠️ jsdelivr failed, trying unpkg...');
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js';
+    script.onload = () => {
+      if (typeof FFmpeg !== 'undefined') {
+        parent.postMessage({ action: 'iframe-active' }, '*');
+        startRender();
+      } else {
+        showError('فشل تحميل المكتبة من كلا المصدرين. تأكد من اتصال الإنترنت.');
+      }
+    };
+    script.onerror = () => showError('تعذر تحميل مكتبة FFmpeg.');
+    document.head.appendChild(script);
+  }
+}
 
+// تشغيل الفحص فور تحميل الصفحة
+window.addEventListener('load', checkAndSignalReady);
+
+// المتغيرات العامة
+let ffmpeg = null;
 const WORKER = 'https://video-builder-proxy.mhhj032009.workers.dev';
 
-// إرسال إشارة الجاهزية
-window.addEventListener('load', () => {
-  console.log('✅ Renderer page loaded');
-  parent.postMessage({ action: 'iframe-active' }, '*');
-});
-
-// استقبال أمر الرندرة
-window.addEventListener('message', async (e) => {
-  console.log('📨 Received message:', e.data);
-  if (e.data?.action !== 'render') return;
-  await runRender(e.data.project);
-});
+function startRender() {
+  window.addEventListener('message', async (e) => {
+    if (e.data?.action === 'render') {
+      await runRender(e.data.project);
+    }
+  });
+}
 
 async function runRender(project) {
+  const statusEl = document.getElementById('status');
+  const detailEl = document.getElementById('detail');
+  const fillEl = document.getElementById('fill');
+  const errorEl = document.getElementById('error');
+
+  function update(status, detail, pct) {
+    statusEl.textContent = status;
+    detailEl.textContent = detail;
+    fillEl.style.width = `${pct}%`;
+    parent.postMessage({ action: 'progress', percent: pct, status, detail }, '*');
+  }
+
   try {
-    update('⏳ تحميل محرك FFmpeg...', 'جاري تحميل ~30MB، هذه المرة فقط', 5);
-    setInfo('📦 تحميل من CDN: cdn.jsdelivr.net');
-    
+    update('⏳ تجهيز المحرك...', 'جاري التهيئة', 5);
+
+    // تهيئة FFmpeg
     if (!ffmpeg) {
-      console.log('🔄 Initializing FFmpeg...');
-      ffmpeg = new FFmpeg();
-      
-      ffmpeg.on('log', (message) => {
-        console.log('[FFmpeg]', message);
-      });
-      
+      // استخدام التدمير الصحيح للكائن FFmpeg
+      const { FFmpeg: FFmpegClass } = FFmpeg; 
+      ffmpeg = new FFmpegClass();
       await ffmpeg.load({
-        coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js',
-        wasmURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/ffmpeg-core.wasm'
+        coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js',
+        wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/ffmpeg-core.wasm'
       });
-      
-      console.log('✅ FFmpeg loaded successfully');
     }
-    
-    update('✅ المحرك جاهز', 'جاري تجهيز ' + (project.scenes?.length || 0) + ' مشهد', 10);
-    setInfo('');
 
     const scenes = project.scenes || [];
     if (!scenes.length) throw new Error('لا توجد مشاهد');
 
-    // 🔊 توليد الأصوات
+    // 1. توليد الأصوات
     update('🔊 جاري توليد الأصوات...', `0 / ${scenes.length}`, 15);
     for (let i = 0; i < scenes.length; i++) {
       const sc = scenes[i];
-      update('🔊 توليد الصوت...' , `مشهد ${i+1} من ${scenes.length}`, 15 + (i/scenes.length)*25);
-      
       const res = await fetch(`${WORKER}/api/tts`, {
-        method: 'POST', 
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ 
-          text: sc.text, 
-          voice: sc.voice || 'ar-SA-ZariyahNeural', 
-          rate: 1.0 
-        })
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ text: sc.text, voice: sc.voice || 'ar-SA-ZariyahNeural', rate: 1.0 })
       });
-      
-      if (!res.ok) throw new Error(`TTS فشل في المشهد ${i+1}: ${res.status}`);
-      
-      const buf = await res.arrayBuffer();
-      ffmpeg.writeFile(`a${i}.wav`, new Uint8Array(buf));
+      if (!res.ok) throw new Error(`فشل الصوت ${i+1}`);
+      ffmpeg.writeFile(`a${i}.wav`, new Uint8Array(await res.arrayBuffer()));
+      update('🔊 الأصوات...', `${i+1}/${scenes.length}`, 15 + (i/scenes.length)*20);
     }
 
-    // 🖼️ تحميل الوسائط
-    update('🖼️ تحميل الخلفيات...', '0%', 45);
+    // 2. تحميل الوسائط
+    update('🖼️ تحميل الخلفيات...', '0%', 40);
     for (let i = 0; i < scenes.length; i++) {
       const sc = scenes[i];
-      update('🖼️ تحميل...' , `مشهد ${i+1}`, 45 + (i/scenes.length)*20);
-      
       if (sc.mediaUrl) {
         try {
           const r = await fetch(sc.mediaUrl);
-          if (!r.ok) throw new Error('فشل التحميل');
           const b = await r.blob();
           const ext = sc.mediaType === 'video' ? 'mp4' : 'jpg';
           ffmpeg.writeFile(`m${i}.${ext}`, new Uint8Array(await b.arrayBuffer()));
-        } catch (err) {
-          console.warn(`مشهد ${i+1}: فشل التحميل، استخدام خلفية سوداء`);
-          createBlack(`m${i}.jpg`, 1280, 720);
+        } catch {
+          // خلفية سوداء عند الفشل
+          const c = document.createElement('canvas'); c.width=1280; c.height=720;
+          const ctx = c.getContext('2d'); ctx.fillStyle='#000'; ctx.fillRect(0,0,1280,720);
+          const d = c.toDataURL('image/jpeg').split(',')[1];
+          const bin = atob(d); const arr = new Uint8Array(bin.length);
+          for(let j=0;j<bin.length;j++) arr[j]=bin.charCodeAt(j);
+          ffmpeg.writeFile(`m${i}.jpg`, arr);
         }
       } else {
-        createBlack(`m${i}.jpg`, 1280, 720);
+        // خلفية سوداء افتراضية
+        const c = document.createElement('canvas'); c.width=1280; c.height=720;
+        const ctx = c.getContext('2d'); ctx.fillStyle='#000'; ctx.fillRect(0,0,1280,720);
+        const d = c.toDataURL('image/jpeg').split(',')[1];
+        const bin = atob(d); const arr = new Uint8Array(bin.length);
+        for(let j=0;j<bin.length;j++) arr[j]=bin.charCodeAt(j);
+        ffmpeg.writeFile(`m${i}.jpg`, arr);
       }
+      update('🖼️ الخلفيات...', `${i+1}/${scenes.length}`, 40 + (i/scenes.length)*20);
     }
 
-    // 🎬 دمج كل مشهد
+    // 3. دمج المشاهد
     update('🎬 دمج المشاهد...', '0%', 70);
-    let concatList = '';
-    
+    let listContent = '';
     for (let i = 0; i < scenes.length; i++) {
       const sc = scenes[i];
       const isVid = sc.mediaType === 'video' && sc.mediaUrl;
-      const inputExt = isVid ? 'mp4' : 'jpg';
+      const ext = isVid ? 'mp4' : 'jpg';
       
-      update('🎬 دمج...' , `مشهد ${i+1} من ${scenes.length}`, 70 + (i/scenes.length)*20);
-      
-      const cmd = [
+      // أمر ffmpeg لكل مشهد
+      await ffmpeg.exec([
         '-y',
-        '-i', `m${i}.${inputExt}`,
+        '-i', `m${i}.${ext}`,
         '-i', `a${i}.wav`,
-        '-c:v', 'libx264',
-        '-preset', 'veryfast',
-        '-crf', '28',
+        '-c:v', 'libx264', '-preset', 'veryfast',
         '-c:a', 'aac',
-        '-b:a', '128k',
         '-t', String(sc.duration || 5),
         '-shortest',
         '-pix_fmt', 'yuv420p',
-        '-vf', isVid ? 
-          'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2' : 
-          'scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720',
-        '-movflags', '+faststart',
+        '-vf', isVid ? 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2' : 'scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720',
         `scene${i}.mp4`
-      ];
+      ]);
       
-      await ffmpeg.exec(cmd);
-      concatList += `file 'scene${i}.mp4'\n`;
+      listContent += `file 'scene${i}.mp4'\n`;
+      update('🎬 الدمج...', `${i+1}/${scenes.length}`, 70 + (i/scenes.length)*20);
     }
 
-    // دمج الكل
-    update('🔗 دمج الفيديو النهائي...', '90%', 90);
-    ffmpeg.writeFile('list.txt', concatList);
-    
-    await ffmpeg.exec([
-      '-f', 'concat',
-      '-safe', '0',
-      '-i', 'list.txt',
-      '-c', 'copy',
-      'final.mp4'
-    ]);
+    // 4. الدمج النهائي
+    update('🔗 تجميع الفيديو...', '90%', 90);
+    ffmpeg.writeFile('list.txt', listContent);
+    await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'final.mp4']);
 
-    update('💾 حفظ الملف...', '95%', 95);
+    // 5. الإرسال
+    update('💾 الحفظ...', '95%', 95);
     const data = await ffmpeg.readFile('final.mp4');
     const blob = new Blob([data.buffer], { type: 'video/mp4' });
     const url = URL.createObjectURL(blob);
     
-    update('✅ تم التصدير بنجاح!', '100%', 100);
-    console.log('✅ Sending render-complete to parent');
+    update('✅ تم!', '100%', 100);
     parent.postMessage({ action: 'render-complete', videoUrl: url }, '*');
-    
+
   } catch (err) {
-    console.error('❌ Render error:', err);
-    const errorMsg = `❌ خطأ: ${err.message}\n\nالتفاصيل في Console (F12)`;
-    showError(errorMsg);
+    console.error(err);
+    showError(err.message);
     parent.postMessage({ action: 'render-error', error: err.message }, '*');
   }
 }
 
-function createBlack(name, w, h) {
-  const c = document.createElement('canvas'); 
-  c.width = w; c.height = h;
-  const x = c.getContext('2d'); 
-  x.fillStyle = '#0f172a'; 
-  x.fillRect(0, 0, w, h);
-  const d = c.toDataURL('image/jpeg').split(',')[1];
-  const b = atob(d); 
-  const a = new Uint8Array(b.length);
-  for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i);
-  ffmpeg.writeFile(name, a);
-}
-
-function update(status, detail, pct) {
-  document.getElementById('status').textContent = status;
-  document.getElementById('detail').textContent = detail;
-  document.getElementById('fill').style.width = `${Math.min(pct, 100)}%`;
-  parent.postMessage({ action: 'progress', percent: pct, status, detail }, '*');
-}
-
-function setInfo(msg) {
-  document.getElementById('info').textContent = msg;
-}
-
 function showError(msg) {
-  const errDiv = document.getElementById('error');
-  errDiv.textContent = msg;
-  errDiv.style.display = 'block';
-  document.getElementById('status').classList.add('error');
+  const el = document.getElementById('error');
+  el.textContent = '❌ ' + msg;
+  el.style.display = 'block';
+  document.getElementById('status').textContent = 'فشل';
 }
 </script>
 </body>
