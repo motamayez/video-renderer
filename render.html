@@ -85,7 +85,6 @@ async function runRender(project) {
       const isVid = sc.mediaType === 'video' && sc.mediaUrl;
       const inputExt = isVid ? 'mp4' : 'jpg';
       
-      // أمر FFmpeg لكل مشهد
       const cmd = [
         '-y',
         '-i', `m${i}.${inputExt}`,
