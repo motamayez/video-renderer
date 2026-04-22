@@ -21,15 +21,32 @@
   <div class="bar"><div class="fill" id="fill"></div></div>
 </div>
 
-<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<!-- 1️⃣ تحميل مكتبة FFmpeg (يجب أن تكون قبل أي كود يستخدمها) -->
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.min.js"></script>
+
+<!-- 2️⃣ كود الرندرة -->
 <script>
-const ffmpeg = FFmpeg.createFFmpeg({ log: true, corePath: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js' });
+// التأكد من تحميل المكتبة
+if (typeof FFmpeg === 'undefined') {
+  document.getElementById('status').textContent = '❌ فشل تحميل FFmpeg';
+  document.getElementById('detail').textContent = 'تأكد من اتصالك بالإنترنت';
+  throw new Error('FFmpeg library failed to load');
+}
+
+const ffmpeg = FFmpeg.createFFmpeg({ 
+  log: true, 
+  corePath: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js' 
+});
 const WORKER = 'https://video-builder-proxy.mhhj032009.workers.dev';
 
+// إعلام الصفحة الأم بأن المحرك جاهز فور تحميل الصفحة
 window.addEventListener('load', () => {
   parent.postMessage({ action: 'iframe-active' }, '*');
+  document.getElementById('status').textContent = '✅ المحرك جاهز';
+  document.getElementById('detail').textContent = 'في انتظار بيانات الفيديو...';
 });
 
+// استقبال أمر الرندرة
 window.addEventListener('message', async (e) => {
   if (e.data?.action !== 'render') return;
   await runRender(e.data.project);
