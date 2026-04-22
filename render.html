@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Cross-Origin-Embedder-Policy" content="require-corp">
+<meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin">
+<title>Mihnah Renderer</title>
+<style>
+body { 
+  font-family: system-ui, sans-serif; 
+  background: #0f172a; 
+  color: #f1f5f9; 
+  display: flex; 
+  align-items: center; 
+  justify-content: center; 
+  min-height: 100vh; 
+  margin: 0; 
+  padding: 20px;
+}
+.container { 
+  text-align: center; 
+  max-width: 600px; 
+  background: #1e293b; 
+  padding: 40px; 
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+}
+.progress { 
+  height: 12px; 
+  background: #334155; 
+  border-radius: 6px; 
+  margin: 30px 0; 
+  overflow: hidden;
+}
+.progress-fill { 
+  height: 100%; 
+  background: linear-gradient(90deg, #3fe890, #60f8b0); 
+  width: 0%; 
+  transition: width 0.4s;
+}
+.status { font-size: 1.2rem; margin-bottom: 10px; }
+.substatus { color: #94a3b8; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🎬 Mihnah Renderer</h1>
+  <div class="status" id="status">في انتظار البيانات...</div>
+  <div class="substatus" id="substatus"></div>
+  <div class="progress"><div class="progress-fill" id="progress"></div></div>
+</div>
+
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<script>
+const ffmpeg = FFmpeg.createFFmpeg({ 
+  log: true,
+  corePath: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js'
+});
+
+const WORKER_URL = 'https://video-builder-proxy.mhhj032009.workers.dev';
+
+window.addEventListener('message', async (event) => {
+  if (event.data?.action !== 'render') return;
+  
+  // إرسال إشارة الجاهزية
+  event.source.postMessage({ action: 'renderer-ready' }, '*');
+  
+  await renderVideo(event.data.project, event.source);
+});
+
+async function renderVideo(project, source) {
+  updateStatus('🔄 تحميل محرك الرندرة...', 'قد يستغرق دقيقة...');
+  
+  try {
+    if (!ffmpeg.isLoaded()) {
+      await ffmpeg.load();
+    }
+    
+    updateStatus('🔊 جاري توليد الأصوات...', `0/${project.scenes.length}`);
+    
+    // توليد الأصوات
+    const audioFiles = [];
+    for (let i = 0; i < project.scenes.length; i++) {
+      const scene = project.scenes[i];
+      
+      const response = await fetch(`${WORKER_URL}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: scene.text,
+          voice: scene.voice,
+          rate: 1.0
+        })
+      });
+      
+      const blob = await response.blob();
+      const buffer = await blob.arrayBuffer();
+      ffmpeg.FS('writeFile', `audio_${i}.wav`, new Uint8Array(buffer));
+      audioFiles.push(`audio_${i}.wav`);
+      
+      updateStatus('🔊 جاري توليد الأصوات...', `${i+1}/${project.scenes.length}`);
+      updateProgress((i + 1) / project.scenes.length * 30);
+    }
+    
+    updateStatus('🎬 جاري تحميل الوسائط...', '0%');
+    
+    // تحميل الوسائط
+    const mediaFiles = [];
+    for (let i = 0; i < project.scenes.length; i++) {
+      const scene = project.scenes[i];
+      if (scene.mediaUrl) {
+        try {
+          const response = await fetch(scene.mediaUrl);
+          const blob = await response.blob();
+          const buffer = await blob.arrayBuffer();
+          const ext = scene.mediaType === 'video' ? 'mp4' : 'jpg';
+          ffmpeg.FS('writeFile', `media_${i}.${ext}`, new Uint8Array(buffer));
+          mediaFiles.push(`media_${i}.${ext}`);
+        } catch (err) {
+          console.error(`Media ${i} error:`, err);
+          // إنشاء صورة سوداء كبديل
+          createBlackImage(`media_${i}.jpg`, 1280, 720);
+          mediaFiles.push(`media_${i}.jpg`);
+        }
+      } else {
+        createBlackImage(`media_${i}.jpg`, 1280, 720);
+        mediaFiles.push(`media_${i}.jpg`);
+      }
+      
+      updateStatus('🎬 جاري تحميل الوسائط...', `${Math.round((i+1)/project.scenes.length*100)}%`);
+      updateProgress(30 + ((i + 1) / project.scenes.length * 30));
+    }
+    
+    updateStatus('🎞️ جاري دمج المشاهد...', 'هذا قد يستغرق بضع دقائق...');
+    updateProgress(70);
+    
+    // بناء أمر FFmpeg معقد لدمج كل المشاهد
+    // للتبسيط: ندمج مشهداً واحداً أولاً (يمكن تطويره لاحقاً)
+    const firstScene = project.scenes[0];
+    const isVideo = firstScene.mediaType === 'video' && firstScene.mediaUrl;
+    
+    const command = [
+      '-y',
+      '-i', isVideo ? mediaFiles[0] : mediaFiles[0],
+      '-i', audioFiles[0],
+      '-c:v', isVideo ? 'libx264' : 'libx264',
+      '-c:a', 'aac',
+      '-t', firstScene.duration.toString(),
+      '-shortest',
+      '-pix_fmt', 'yuv420p',
+      '-vf', isVideo ? 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2' : 'zoompan=z=min(1+0.08*on/25,1.1):d=125:x=(iw-ow)/2:y=(ih-oh)/2:s=1280x720',
+      '-movflags', '+faststart',
+      'output.mp4'
+    ];
+    
+    await ffmpeg.run(...command);
+    
+    updateStatus('✅ اكتمل الرندرة!', 'جاري الإرسال...');
+    updateProgress(100);
+    
+    // استخراج الفيديو
+    const data = ffmpeg.FS('readFile', 'output.mp4');
+    const blob = new Blob([data.buffer], { type: 'video/mp4' });
+    const url = URL.createObjectURL(blob);
+    
+    // إرسال إلى Blogger
+    source.postMessage({ 
+      action: 'render-complete', 
+      videoUrl: url 
+    }, '*');
+    
+  } catch (err) {
+    console.error('Render error:', err);
+    updateStatus('❌ خطأ في الرندرة', err.message);
+    source.postMessage({ action: 'render-error', error: err.message }, '*');
+  }
+}
+
+function createBlackImage(filename, width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, 0, width, height);
+  
+  const data = canvas.toDataURL('image/jpeg').split(',')[1];
+  const binary = atob(data);
+  const array = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    array[i] = binary.charCodeAt(i);
+  }
+  ffmpeg.FS('writeFile', filename, array);
+}
+
+function updateStatus(main, sub) {
+  document.getElementById('status').textContent = main;
+  document.getElementById('substatus').textContent = sub || '';
+}
+
+function updateProgress(percent) {
+  document.getElementById('progress').style.width = `${percent}%`;
+}
+</script>
+</body>
+</html>
