@@ -6,200 +6,128 @@
 <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin">
 <title>Mihnah Renderer</title>
 <style>
-body { 
-  font-family: system-ui, sans-serif; 
-  background: #0f172a; 
-  color: #f1f5f9; 
-  display: flex; 
-  align-items: center; 
-  justify-content: center; 
-  min-height: 100vh; 
-  margin: 0; 
-  padding: 20px;
-}
-.container { 
-  text-align: center; 
-  max-width: 600px; 
-  background: #1e293b; 
-  padding: 40px; 
-  border-radius: 16px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.4);
-}
-.progress { 
-  height: 12px; 
-  background: #334155; 
-  border-radius: 6px; 
-  margin: 30px 0; 
-  overflow: hidden;
-}
-.progress-fill { 
-  height: 100%; 
-  background: linear-gradient(90deg, #3fe890, #60f8b0); 
-  width: 0%; 
-  transition: width 0.4s;
-}
-.status { font-size: 1.2rem; margin-bottom: 10px; }
-.substatus { color: #94a3b8; font-size: 0.9rem; }
+  body { font-family: system-ui, sans-serif; background: #0f172a; color: #f1f5f9; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
+  .box { text-align: center; max-width: 500px; background: #1e293b; padding: 30px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+  .bar { height: 12px; background: #334155; border-radius: 6px; margin: 20px 0; overflow: hidden; }
+  .fill { height: 100%; background: linear-gradient(90deg, #3fe890, #60f8b0); width: 0%; transition: width 0.4s ease; }
+  h2 { margin-bottom: 5px; }
+  p { color: #94a3b8; font-size: 0.9rem; margin: 0; }
 </style>
 </head>
 <body>
-<div class="container">
-  <h1>🎬 Mihnah Renderer</h1>
-  <div class="status" id="status">في انتظار البيانات...</div>
-  <div class="substatus" id="substatus"></div>
-  <div class="progress"><div class="progress-fill" id="progress"></div></div>
+<div class="box">
+  <h2 id="status">🔄 جاري تهيئة المحرك...</h2>
+  <p id="detail">يرجى الانتظار، هذه المرة فقط</p>
+  <div class="bar"><div class="fill" id="fill"></div></div>
 </div>
 
 <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
 <script>
-const ffmpeg = FFmpeg.createFFmpeg({ 
-  log: true,
-  corePath: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js'
+const ffmpeg = FFmpeg.createFFmpeg({ log: true, corePath: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js' });
+const WORKER = 'https://video-builder-proxy.mhhj032009.workers.dev';
+
+// 1️⃣ إرسال إشارة الجاهزية فوراً للواجهة
+window.addEventListener('load', () => {
+  parent.postMessage({ action: 'iframe-active' }, '*');
 });
 
-const WORKER_URL = 'https://video-builder-proxy.mhhj032009.workers.dev';
-
-window.addEventListener('message', async (event) => {
-  if (event.data?.action !== 'render') return;
-  
-  // إرسال إشارة الجاهزية
-  event.source.postMessage({ action: 'renderer-ready' }, '*');
-  
-  await renderVideo(event.data.project, event.source);
+// 2️⃣ استقبال أمر الرندرة
+window.addEventListener('message', async (e) => {
+  if (e.data?.action !== 'render') return;
+  await runRender(e.data.project);
 });
 
-async function renderVideo(project, source) {
-  updateStatus('🔄 تحميل محرك الرندرة...', 'قد يستغرق دقيقة...');
-  
+async function runRender(project) {
   try {
-    if (!ffmpeg.isLoaded()) {
-      await ffmpeg.load();
-    }
-    
-    updateStatus('🔊 جاري توليد الأصوات...', `0/${project.scenes.length}`);
-    
-    // توليد الأصوات
-    const audioFiles = [];
-    for (let i = 0; i < project.scenes.length; i++) {
-      const scene = project.scenes[i];
-      
-      const response = await fetch(`${WORKER_URL}/api/tts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: scene.text,
-          voice: scene.voice,
-          rate: 1.0
-        })
+    update('⏳ تحميل محرك FFmpeg...', 'قد يستغرق 10-20 ثانية لأول مرة', 5);
+    if (!ffmpeg.isLoaded()) await ffmpeg.load();
+    update('✅ المحرك جاهز', 'جاري تجهيز المشاهد', 10);
+
+    const scenes = project.scenes || [];
+    if (!scenes.length) throw new Error('لا توجد مشاهد');
+
+    // 🔊 توليد الأصوات
+    update('🔊 جاري توليد الأصوات...', `0 / ${scenes.length}`, 15);
+    for (let i = 0; i < scenes.length; i++) {
+      const sc = scenes[i];
+      const res = await fetch(`${WORKER}/api/tts`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ text: sc.text, voice: sc.voice || 'ar-SA-ZariyahNeural', rate: 1.0 })
       });
-      
-      const blob = await response.blob();
-      const buffer = await blob.arrayBuffer();
-      ffmpeg.FS('writeFile', `audio_${i}.wav`, new Uint8Array(buffer));
-      audioFiles.push(`audio_${i}.wav`);
-      
-      updateStatus('🔊 جاري توليد الأصوات...', `${i+1}/${project.scenes.length}`);
-      updateProgress((i + 1) / project.scenes.length * 30);
+      if (!res.ok) throw new Error(`TTS فشل في المشهد ${i+1}`);
+      const buf = await res.arrayBuffer();
+      ffmpeg.FS('writeFile', `a${i}.wav`, new Uint8Array(buf));
+      update('🔊 توليد الأصوات...', `${i+1} / ${scenes.length}`, 15 + (i/scenes.length)*25);
     }
-    
-    updateStatus('🎬 جاري تحميل الوسائط...', '0%');
-    
-    // تحميل الوسائط
-    const mediaFiles = [];
-    for (let i = 0; i < project.scenes.length; i++) {
-      const scene = project.scenes[i];
-      if (scene.mediaUrl) {
+
+    // 🖼️ تحميل الوسائط
+    update('🖼️ تحميل الخلفيات...', '0%', 45);
+    for (let i = 0; i < scenes.length; i++) {
+      const sc = scenes[i];
+      if (sc.mediaUrl) {
         try {
-          const response = await fetch(scene.mediaUrl);
-          const blob = await response.blob();
-          const buffer = await blob.arrayBuffer();
-          const ext = scene.mediaType === 'video' ? 'mp4' : 'jpg';
-          ffmpeg.FS('writeFile', `media_${i}.${ext}`, new Uint8Array(buffer));
-          mediaFiles.push(`media_${i}.${ext}`);
-        } catch (err) {
-          console.error(`Media ${i} error:`, err);
-          // إنشاء صورة سوداء كبديل
-          createBlackImage(`media_${i}.jpg`, 1280, 720);
-          mediaFiles.push(`media_${i}.jpg`);
+          const r = await fetch(sc.mediaUrl);
+          const b = await r.blob();
+          const ext = sc.mediaType === 'video' ? 'mp4' : 'jpg';
+          ffmpeg.FS('writeFile', `m${i}.${ext}`, new Uint8Array(await b.arrayBuffer()));
+        } catch {
+          createBlack(`m${i}.jpg`, 1280, 720);
         }
       } else {
-        createBlackImage(`media_${i}.jpg`, 1280, 720);
-        mediaFiles.push(`media_${i}.jpg`);
+        createBlack(`m${i}.jpg`, 1280, 720);
       }
-      
-      updateStatus('🎬 جاري تحميل الوسائط...', `${Math.round((i+1)/project.scenes.length*100)}%`);
-      updateProgress(30 + ((i + 1) / project.scenes.length * 30));
+      update('🖼️ تحميل الخلفيات...', `${Math.round(((i+1)/scenes.length)*100)}%`, 45 + (i/scenes.length)*20);
     }
-    
-    updateStatus('🎞️ جاري دمج المشاهد...', 'هذا قد يستغرق بضع دقائق...');
-    updateProgress(70);
-    
-    // بناء أمر FFmpeg معقد لدمج كل المشاهد
-    // للتبسيط: ندمج مشهداً واحداً أولاً (يمكن تطويره لاحقاً)
-    const firstScene = project.scenes[0];
-    const isVideo = firstScene.mediaType === 'video' && firstScene.mediaUrl;
-    
-    const command = [
+
+    // 🎬 دمج المشهد الأول (للتجربة المستقرة)
+    update('🎬 دمج الفيديو والصوت...', 'هذا قد يأخذ دقيقة', 70);
+    const first = scenes[0];
+    const isVid = first.mediaType === 'video' && first.mediaUrl;
+    const cmd = [
       '-y',
-      '-i', isVideo ? mediaFiles[0] : mediaFiles[0],
-      '-i', audioFiles[0],
-      '-c:v', isVideo ? 'libx264' : 'libx264',
+      '-i', isVid ? `m0.mp4` : `m0.jpg`,
+      '-i', `a0.wav`,
+      '-c:v', 'libx264',
       '-c:a', 'aac',
-      '-t', firstScene.duration.toString(),
+      '-t', String(first.duration || 5),
       '-shortest',
       '-pix_fmt', 'yuv420p',
-      '-vf', isVideo ? 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2' : 'zoompan=z=min(1+0.08*on/25,1.1):d=125:x=(iw-ow)/2:y=(ih-oh)/2:s=1280x720',
+      '-vf', isVid ? 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2' : 'zoompan=z=min(1+0.1*on/25,1.2):d=125:x=(iw-ow)/2:y=(ih-oh)/2:s=1280x720',
       '-movflags', '+faststart',
-      'output.mp4'
+      'out.mp4'
     ];
+
+    await ffmpeg.run(...cmd);
+    update('💾 حفظ الملف النهائي...', '95%', 95);
     
-    await ffmpeg.run(...command);
-    
-    updateStatus('✅ اكتمل الرندرة!', 'جاري الإرسال...');
-    updateProgress(100);
-    
-    // استخراج الفيديو
-    const data = ffmpeg.FS('readFile', 'output.mp4');
+    const data = ffmpeg.FS('readFile', 'out.mp4');
     const blob = new Blob([data.buffer], { type: 'video/mp4' });
     const url = URL.createObjectURL(blob);
     
-    // إرسال إلى Blogger
-    source.postMessage({ 
-      action: 'render-complete', 
-      videoUrl: url 
-    }, '*');
+    update('✅ تم التصدير بنجاح!', 'انقر لتحميل الفيديو', 100);
+    parent.postMessage({ action: 'render-complete', videoUrl: url }, '*');
     
   } catch (err) {
-    console.error('Render error:', err);
-    updateStatus('❌ خطأ في الرندرة', err.message);
-    source.postMessage({ action: 'render-error', error: err.message }, '*');
+    console.error(err);
+    update('❌ خطأ أثناء التصدير', err.message, 100);
+    parent.postMessage({ action: 'render-error', error: err.message }, '*');
   }
 }
 
-function createBlackImage(filename, width, height) {
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(0, 0, width, height);
-  
-  const data = canvas.toDataURL('image/jpeg').split(',')[1];
-  const binary = atob(data);
-  const array = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    array[i] = binary.charCodeAt(i);
-  }
-  ffmpeg.FS('writeFile', filename, array);
+function createBlack(name, w, h) {
+  const c = document.createElement('canvas'); c.width=w; c.height=h;
+  const x = c.getContext('2d'); x.fillStyle='#0f172a'; x.fillRect(0,0,w,h);
+  const d = c.toDataURL('image/jpeg').split(',')[1];
+  const b = atob(d); const a = new Uint8Array(b.length);
+  for(let i=0;i<b.length;i++) a[i]=b.charCodeAt(i);
+  ffmpeg.FS('writeFile', name, a);
 }
 
-function updateStatus(main, sub) {
-  document.getElementById('status').textContent = main;
-  document.getElementById('substatus').textContent = sub || '';
-}
-
-function updateProgress(percent) {
-  document.getElementById('progress').style.width = `${percent}%`;
+function update(status, detail, pct) {
+  document.getElementById('status').textContent = status;
+  document.getElementById('detail').textContent = detail;
+  document.getElementById('fill').style.width = `${Math.min(pct,100)}%`;
+  parent.postMessage({ action: 'progress', percent: pct, status, detail }, '*');
 }
 </script>
 </body>
